@@ -180,10 +180,10 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('readTextFile', (_e, filePath) => ipcErrorWrapper(readTextFile)(filePath))
   ipcMain.handle('getRuntimeConfigStr', ipcErrorWrapper(getRuntimeConfigStr))
   ipcMain.handle('getRuntimeConfig', ipcErrorWrapper(getRuntimeConfig))
-  ipcMain.handle('downloadAndInstallUpdate', (_e, version) =>
-    ipcErrorWrapper(downloadAndInstallUpdate)(version)
-  )
-  ipcMain.handle('checkUpdate', ipcErrorWrapper(checkUpdate))
+  // ipcMain.handle('downloadAndInstallUpdate', (_e, version) =>
+  //   ipcErrorWrapper(downloadAndInstallUpdate)(version)
+  // )
+  // ipcMain.handle('checkUpdate', ipcErrorWrapper(checkUpdate))
   ipcMain.handle('getVersion', () => app.getVersion())
   ipcMain.handle('platform', () => process.platform)
   ipcMain.handle('openUWPTool', ipcErrorWrapper(openUWPTool))
