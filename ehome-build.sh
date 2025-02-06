@@ -18,7 +18,7 @@ set +e
 
 _msg ()
 {
-  echo -e "[ehome-clash-verge-build] $1"
+  echo -e "[ehome-mihomo-party-build] $1"
 }
 
 function _date ()
@@ -88,9 +88,9 @@ fi
 _job_msg "build mihomo-party"
 _job_msg_sub "pnpm install"
 pnpm install --frozen-lockfile; _nerr
-_job_msg_sub "fetch resources (may be use proxy bypass GFW)"
-pnpm check ; _nerr
-_job_msg_sub "build appimage"
+# _job_msg_sub "fetch resources (may be use proxy bypass GFW)"
+# pnpm check ; _nerr
+_job_msg_sub "build deb"
 # FIXME: [2024-12-08 Sun 00:45:23] see bug of appimage build:
 # https://github.com/linuxdeploy/linuxdeploy/issues/272
 export NO_STRIP=true
