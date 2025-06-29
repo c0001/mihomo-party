@@ -8,7 +8,7 @@ import { getGistUrl, patchControledMihomoConfig, restartCore } from '@renderer/u
 import { MdDeleteForever } from 'react-icons/md'
 import { BiCopy } from 'react-icons/bi'
 import { IoIosHelpCircle } from 'react-icons/io'
-import { platform } from '@renderer/utils/init'
+import { platform, version } from '@renderer/utils/init'
 import { useTranslation } from 'react-i18next'
 
 const MihomoConfig: React.FC = () => {
@@ -44,7 +44,7 @@ const MihomoConfig: React.FC = () => {
           size="sm"
           className="w-[60%]"
           value={ua}
-          placeholder={t('mihomo.userAgentPlaceholder')}
+          placeholder={t('mihomo.userAgentPlaceholder', { version })}
           onValueChange={(v) => {
             setUa(v)
             setUaDebounce(v)
@@ -129,6 +129,7 @@ const MihomoConfig: React.FC = () => {
           size="sm"
           selectedKeys={new Set([proxyCols])}
           aria-label={t('mihomo.proxyColumns.title')}
+          disallowEmptySelection={true}
           onSelectionChange={async (v) => {
             await patchAppConfig({ proxyCols: v.currentKey as 'auto' | '1' | '2' | '3' | '4' })
           }}
@@ -147,6 +148,7 @@ const MihomoConfig: React.FC = () => {
             className="w-[150px]"
             size="sm"
             selectedKeys={new Set([mihomoCpuPriority])}
+            disallowEmptySelection={true}
             onSelectionChange={async (v) => {
               try {
                 await patchAppConfig({

@@ -10,6 +10,7 @@ import yaml from 'yaml'
 import { defaultProfile } from '../utils/template'
 import { subStorePort } from '../resolve/server'
 import { join } from 'path'
+import { app } from 'electron'
 
 let profileConfig: IProfileConfig // profile.yaml
 
@@ -114,6 +115,7 @@ export async function createProfile(item: Partial<IProfileItem>): Promise<IProfi
     interval: item.interval || 0,
     override: item.override || [],
     useProxy: item.useProxy || false,
+    allowFixedInterval: item.allowFixedInterval || false,
     updated: new Date().getTime()
   } as IProfileItem
   switch (newItem.type) {
@@ -133,7 +135,7 @@ export async function createProfile(item: Partial<IProfileItem>): Promise<IProfi
         }
         res = await axios.get(urlObj.toString(), {
           headers: {
-            'User-Agent': userAgent || 'clash.meta'
+            'User-Agent': userAgent || `mihomo.party/v${app.getVersion()} (clash.meta)`
           },
           responseType: 'text'
         })
@@ -147,7 +149,7 @@ export async function createProfile(item: Partial<IProfileItem>): Promise<IProfi
               }
             : false,
           headers: {
-            'User-Agent': userAgent || 'clash.meta'
+            'User-Agent': userAgent || `mihomo.party/v${app.getVersion()} (clash.meta)`
           },
           responseType: 'text'
         })
@@ -162,7 +164,9 @@ export async function createProfile(item: Partial<IProfileItem>): Promise<IProfi
         newItem.home = headers['profile-web-page-url']
       }
       if (headers['profile-update-interval']) {
-        newItem.interval = parseInt(headers['profile-update-interval']) * 60
+        if (!item.allowFixedInterval) {
+          newItem.interval = parseInt(headers['profile-update-interval']) * 60
+        }
       }
       if (headers['subscription-userinfo']) {
         newItem.extra = parseSubinfo(headers['subscription-userinfo'])

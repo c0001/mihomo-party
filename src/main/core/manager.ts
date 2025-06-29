@@ -145,6 +145,12 @@ export async function startCore(detached = false): Promise<Promise<void>[]> {
         reject(i18next.t('tun.error.tunPermissionDenied'))
       }
 
+      if ((process.platform !== 'win32' && str.includes('External controller unix listen error')) ||
+        (process.platform === 'win32' && str.includes('External controller pipe listen error'))
+      ) {
+        reject(i18next.t('mihomo.error.externalControllerListenError'))
+      }
+
       if (
         (process.platform !== 'win32' && str.includes('RESTful API unix listening at')) ||
         (process.platform === 'win32' && str.includes('RESTful API pipe listening at'))
@@ -256,18 +262,22 @@ async function checkProfile(): Promise<void> {
   }
 }
 
-export async function manualGrantCorePermition(password?: string): Promise<void> {
+export async function manualGrantCorePermition(): Promise<void> {
   const { core = 'mihomo' } = await getAppConfig()
   const corePath = mihomoCorePath(core)
   const execPromise = promisify(exec)
+  const execFilePromise = promisify(execFile)
   if (process.platform === 'darwin') {
     const shell = `chown root:admin ${corePath.replace(' ', '\\\\ ')}\nchmod +sx ${corePath.replace(' ', '\\\\ ')}`
     const command = `do shell script "${shell}" with administrator privileges`
     await execPromise(`osascript -e '${command}'`)
   }
   if (process.platform === 'linux') {
-    await execPromise(`echo "${password}" | sudo -S chown root:root "${corePath}"`)
-    await execPromise(`echo "${password}" | sudo -S chmod +sx "${corePath}"`)
+    await execFilePromise('pkexec', [
+      'bash',
+      '-c',
+      `chown root:root "${corePath}" && chmod +sx "${corePath}"`
+    ])
   }
 }
 

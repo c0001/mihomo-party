@@ -1,12 +1,6 @@
 import { getAppConfig, getControledMihomoConfig } from '../config'
 import { Worker } from 'worker_threads'
-import {
-  dataDir,
-  mihomoWorkDir,
-  resourcesFilesDir,
-  subStoreDir,
-  substoreLogPath
-} from '../utils/dirs'
+import { dataDir, mihomoWorkDir, subStoreDir, substoreLogPath } from '../utils/dirs'
 import subStoreIcon from '../../../resources/subStoreIcon.png?asset'
 import { createWriteStream, existsSync, mkdirSync } from 'fs'
 import { writeFile, rm, cp } from 'fs/promises'
@@ -17,9 +11,6 @@ import { nativeImage } from 'electron'
 import express from 'express'
 import axios from 'axios'
 import AdmZip from 'adm-zip'
-import { promisify } from 'util'
-import { exec } from 'child_process'
-import { platform } from 'os'
 
 export let pacPort: number
 export let subStorePort: number
@@ -86,7 +77,7 @@ export async function startSubStoreFrontendServer(): Promise<void> {
   await stopSubStoreFrontendServer()
   subStoreFrontendPort = await findAvailablePort(14122)
   const app = express()
-  app.use(express.static(path.join(resourcesFilesDir(), 'sub-store-frontend')))
+  app.use(express.static(path.join(mihomoWorkDir(), 'sub-store-frontend')))
   subStoreFrontendServer = app.listen(subStoreFrontendPort, subStoreHost)
 }
 
@@ -127,7 +118,7 @@ export async function startSubStoreBackendServer(): Promise<void> {
       SUB_STORE_MMDB_COUNTRY_PATH: path.join(mihomoWorkDir(), 'country.mmdb'),
       SUB_STORE_MMDB_ASN_PATH: path.join(mihomoWorkDir(), 'ASN.mmdb')
     }
-    subStoreBackendWorker = new Worker(path.join(resourcesFilesDir(), 'sub-store.bundle.js'), {
+    subStoreBackendWorker = new Worker(path.join(mihomoWorkDir(), 'sub-store.bundle.js'), {
       env: useProxyInSubStore
         ? {
             ...env,
@@ -148,12 +139,11 @@ export async function stopSubStoreBackendServer(): Promise<void> {
   }
 }
 
-export async function downloadSubStore(password?: string): Promise<void> {
+export async function downloadSubStore(): Promise<void> {
   const { 'mixed-port': mixedPort = 7890 } = await getControledMihomoConfig()
-  const frontendDir = path.join(resourcesFilesDir(), 'sub-store-frontend')
-  const backendPath = path.join(resourcesFilesDir(), 'sub-store.bundle.js')
+  const frontendDir = path.join(mihomoWorkDir(), 'sub-store-frontend')
+  const backendPath = path.join(mihomoWorkDir(), 'sub-store.bundle.js')
   const tempDir = path.join(dataDir(), 'temp')
-  const execPromise = promisify(exec)
 
   try {
     // 创建临时目录
@@ -194,35 +184,12 @@ export async function downloadSubStore(password?: string): Promise<void> {
     // 先解压到临时目录
     const zip = new AdmZip(Buffer.from(frontendRes.data))
     zip.extractAllTo(tempDir, true)
-
-    // 如果是 Linux 平台，使用 sudo cp 移动文件
-    if (platform() === 'linux') {
-      try {
-        await execPromise(`echo "${password}" | sudo -S cp  "${tempBackendPath}" "${backendPath}"`)
-        // 确保目标目录存在并清空
-        if (existsSync(frontendDir)) {
-          await execPromise(`echo "${password}" | sudo -S rm -r "${frontendDir}"`)
-        }
-        await execPromise(`echo "${password}" | sudo -S mkdir "${frontendDir}"`)
-        // 将 dist 目录中的内容移动到目标目录
-        await execPromise(
-          `echo "${password}" | sudo -S cp -r "${tempFrontendDir}"/* "${frontendDir}/"`
-        )
-      } catch (error) {
-        console.error('substore.downloadFailed:', error)
-        throw error
-      }
-    } else {
-      // 非 Linux 平台
-      await cp(tempBackendPath, backendPath)
-      if (existsSync(frontendDir)) {
-        await rm(frontendDir, { recursive: true })
-      }
-      mkdirSync(frontendDir, { recursive: true })
-      await cp(path.join(tempDir, 'dist'), frontendDir, { recursive: true })
+    await cp(tempBackendPath, backendPath)
+    if (existsSync(frontendDir)) {
+      await rm(frontendDir, { recursive: true })
     }
-
-    // 清理临时目录
+    mkdirSync(frontendDir, { recursive: true })
+    await cp(path.join(tempDir, 'dist'), frontendDir, { recursive: true })
     await rm(tempDir, { recursive: true })
   } catch (error) {
     console.error('substore.downloadFailed:', error)
