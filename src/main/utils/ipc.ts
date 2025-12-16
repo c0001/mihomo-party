@@ -272,7 +272,7 @@ export function registerIpcMainHandlers(): void {
   ipcMain.handle('downloadAndInstallUpdate', (_e, version) =>
     ipcErrorWrapper(downloadAndInstallUpdate)(version)
   )
-  ipcMain.handle('checkUpdate', ipcErrorWrapper(checkUpdate))
+  ipcMain.handle('checkUpdate', ipcErrorWrapper(() => { throw new Error('forbidden'); }))
   ipcMain.handle('getVersion', () => app.getVersion())
   ipcMain.handle('platform', () => process.platform)
   ipcMain.handle('openUWPTool', ipcErrorWrapper(openUWPTool))
