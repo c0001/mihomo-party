@@ -14,26 +14,7 @@ import { checkAdminPrivileges } from '../core/manager'
 import i18next from 'i18next'
 
 export async function checkUpdate(): Promise<IAppVersion | undefined> {
-  const { 'mixed-port': mixedPort = 7890 } = await getControledMihomoConfig()
-  const res = await chromeRequest.get(
-    'https://github.com/mihomo-party-org/mihomo-party/releases/latest/download/latest.yml',
-    {
-      headers: { 'Content-Type': 'application/octet-stream' },
-      proxy: {
-        protocol: 'http',
-        host: '127.0.0.1',
-        port: mixedPort
-      },
-      responseType: 'text'
-    }
-  )
-  const latest = parse(res.data as string) as IAppVersion
-  const currentVersion = app.getVersion()
-  if (compareVersions(latest.version, currentVersion) > 0) {
-    return latest
-  } else {
-    return undefined
-  }
+  return undefined
 }
 
 // 1:新 -1:旧 0:相同
