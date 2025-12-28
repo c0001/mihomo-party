@@ -11,6 +11,7 @@ import { exec, execSync, spawn } from 'child_process'
 import { promisify } from 'util'
 import { appLogger } from '../utils/logger'
 import { checkAdminPrivileges } from '../core/manager'
+import i18next from 'i18next'
 
 export async function checkUpdate(): Promise<IAppVersion | undefined> {
   const { 'mixed-port': mixedPort = 7890 } = await getControledMihomoConfig()
@@ -26,7 +27,7 @@ export async function checkUpdate(): Promise<IAppVersion | undefined> {
       responseType: 'text'
     }
   )
-  const latest = parse(res.data) as IAppVersion
+  const latest = parse(res.data as string) as IAppVersion
   const currentVersion = app.getVersion()
   if (compareVersions(latest.version, currentVersion) > 0) {
     return latest
@@ -68,7 +69,7 @@ export async function downloadAndInstallUpdate(version: string): Promise<void> {
     file = file.replace('-setup.exe', '-portable.7z')
   }
   if (!file) {
-    throw new Error('不支持自动更新，请手动下载更新')
+    throw new Error(i18next.t('common.error.autoUpdateNotSupported'))
   }
   if (process.platform === 'win32' && parseInt(os.release()) < 10) {
     file = file.replace('windows', 'win7')
@@ -94,7 +95,7 @@ export async function downloadAndInstallUpdate(version: string): Promise<void> {
           'Content-Type': 'application/octet-stream'
         }
       })
-      await writeFile(path.join(dataDir(), file), res.data)
+      await writeFile(path.join(dataDir(), file), res.data as string | Buffer)
     }
     if (file.endsWith('.exe')) {
       try {
@@ -125,7 +126,7 @@ export async function downloadAndInstallUpdate(version: string): Promise<void> {
       } catch (installerError) {
         await appLogger.error('Failed to start installer, trying fallback', installerError)
 
-        // Fallback: 尝试使用shell.openPath打开安装包
+        // Fallback: 尝试使用 shell.openPath 打开安装包
         try {
           await shell.openPath(path.join(dataDir(), file))
           await appLogger.info('Opened installer with shell.openPath as fallback')
