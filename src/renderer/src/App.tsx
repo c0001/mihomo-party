@@ -1,5 +1,5 @@
 import { useTheme } from 'next-themes'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { NavigateFunction, useLocation, useNavigate, useRoutes } from 'react-router-dom'
 import OutboundModeSwitcher from '@renderer/components/sider/outbound-mode-switcher'
 import SysproxySwitcher from '@renderer/components/sider/sysproxy-switcher'
@@ -32,17 +32,14 @@ import { applyTheme, setNativeTheme, setTitleBarOverlay } from '@renderer/utils/
 import { platform } from '@renderer/utils/init'
 import { TitleBarOverlayOptions } from 'electron'
 import SubStoreCard from '@renderer/components/sider/substore-card'
-import MihomoIcon from './components/base/mihomo-icon'
-import { driver } from 'driver.js'
+import { createTourDriver, getDriver, startTourIfNeeded } from '@renderer/utils/tour'
 import 'driver.js/dist/driver.css'
 import { useTranslation } from 'react-i18next'
+import MihomoIcon from './components/base/mihomo-icon'
 
 let navigate: NavigateFunction
-let driverInstance: ReturnType<typeof driver> | null = null
 
-export function getDriver(): ReturnType<typeof driver> | null {
-  return driverInstance
-}
+export { getDriver }
 
 const App: React.FC = () => {
   const { t } = useTranslation()
@@ -74,23 +71,25 @@ const App: React.FC = () => {
   const siderWidthValueRef = useRef(siderWidthValue)
   const [resizing, setResizing] = useState(false)
   const resizingRef = useRef(resizing)
+  const tourInitialized = useRef(false)
   const sensors = useSensors(useSensor(PointerSensor))
   const { setTheme, systemTheme } = useTheme()
   navigate = useNavigate()
   const location = useLocation()
   const page = useRoutes(routes)
-  const setTitlebar = (): void => {
+
+  const setTitlebar = useCallback((): void => {
     if (!useWindowFrame && platform !== 'darwin') {
       const options = { height: 48 } as TitleBarOverlayOptions
       try {
         options.color = window.getComputedStyle(document.documentElement).backgroundColor
         options.symbolColor = window.getComputedStyle(document.documentElement).color
         setTitleBarOverlay(options)
-      } catch (e) {
+      } catch {
         // ignore
       }
     }
-  }
+  }, [useWindowFrame])
 
   useEffect(() => {
     setOrder(siderOrder)
@@ -102,187 +101,18 @@ const App: React.FC = () => {
     resizingRef.current = resizing
   }, [siderWidthValue, resizing])
 
-  useEffect(() => {
-    driverInstance = driver({
-      showProgress: true,
-      nextBtnText: t('common.next'),
-      prevBtnText: t('common.prev'),
-      doneBtnText: t('common.done'),
-      progressText: '{{current}} / {{total}}',
-      overlayOpacity: 0.9,
-      steps: [
-        {
-          element: 'none',
-          popover: {
-            title: t('guide.welcome.title'),
-            description: t('guide.welcome.description'),
-            side: 'over',
-            align: 'center'
-          }
-        },
-        {
-          element: '.side',
-          popover: {
-            title: t('guide.sider.title'),
-            description: t('guide.sider.description'),
-            side: 'right',
-            align: 'center'
-          }
-        },
-        {
-          element: '.sysproxy-card',
-          popover: {
-            title: t('guide.card.title'),
-            description: t('guide.card.description'),
-            side: 'right',
-            align: 'start'
-          }
-        },
-        {
-          element: '.main',
-          popover: {
-            title: t('guide.main.title'),
-            description: t('guide.main.description'),
-            side: 'left',
-            align: 'center'
-          }
-        },
-        {
-          element: '.profile-card',
-          popover: {
-            title: t('guide.profile.title'),
-            description: t('guide.profile.description'),
-            side: 'right',
-            align: 'start',
-            onNextClick: async (): Promise<void> => {
-              navigate('/profiles')
-              setTimeout(() => {
-                driverInstance?.moveNext()
-              }, 0)
-            }
-          }
-        },
-        {
-          element: '.profiles-sticky',
-          popover: {
-            title: t('guide.import.title'),
-            description: t('guide.import.description'),
-            side: 'bottom',
-            align: 'start'
-          }
-        },
-        {
-          element: '.substore-import',
-          popover: {
-            title: t('guide.substore.title'),
-            description: t('guide.substore.description'),
-            side: 'bottom',
-            align: 'start'
-          }
-        },
-        {
-          element: '.new-profile',
-          popover: {
-            title: t('guide.localProfile.title'),
-            description: t('guide.localProfile.description'),
-            side: 'bottom',
-            align: 'start'
-          }
-        },
-        {
-          element: '.sysproxy-card',
-          popover: {
-            title: t('guide.sysproxy.title'),
-            description: t('guide.sysproxy.description'),
-            side: 'right',
-            align: 'start',
-            onNextClick: async (): Promise<void> => {
-              navigate('/sysproxy')
-              setTimeout(() => {
-                driverInstance?.moveNext()
-              }, 0)
-            }
-          }
-        },
-        {
-          element: '.sysproxy-settings',
-          popover: {
-            title: t('guide.sysproxySetting.title'),
-            description: t('guide.sysproxySetting.description'),
-            side: 'top',
-            align: 'start'
-          }
-        },
-        {
-          element: '.tun-card',
-          popover: {
-            title: t('guide.tun.title'),
-            description: t('guide.tun.description'),
-            side: 'right',
-            align: 'start',
-            onNextClick: async (): Promise<void> => {
-              navigate('/tun')
-              setTimeout(() => {
-                driverInstance?.moveNext()
-              }, 0)
-            }
-          }
-        },
-        {
-          element: '.tun-settings',
-          popover: {
-            title: t('guide.tunSetting.title'),
-            description: t('guide.tunSetting.description'),
-            side: 'bottom',
-            align: 'start'
-          }
-        },
-        {
-          element: '.override-card',
-          popover: {
-            title: t('guide.override.title'),
-            description: t('guide.override.description'),
-            side: 'right',
-            align: 'center'
-          }
-        },
-        {
-          element: '.dns-card',
-          popover: {
-            title: t('guide.dns.title'),
-            description: t('guide.dns.description'),
-            side: 'right',
-            align: 'center',
-            onNextClick: async (): Promise<void> => {
-              navigate('/profiles')
-              setTimeout(() => {
-                driverInstance?.moveNext()
-              }, 0)
-            }
-          }
-        },
-        {
-          element: 'none',
-          popover: {
-            title: t('guide.end.title'),
-            description: t('guide.end.description'),
-            side: 'top',
-            align: 'center',
-            onNextClick: async (): Promise<void> => {
-              navigate('/profiles')
-              setTimeout(() => {
-                driverInstance?.destroy()
-              }, 0)
-            }
-          }
-        }
-      ]
-    })
+  const onResizeEnd = useCallback((): void => {
+    if (resizingRef.current) {
+      setResizing(false)
+      patchAppConfig({ siderWidth: siderWidthValueRef.current })
+    }
+  }, [patchAppConfig])
 
-    const tourShown = window.localStorage.getItem('tourShown')
-    if (!tourShown) {
-      window.localStorage.setItem('tourShown', 'true')
-      driverInstance.drive()
+  useEffect(() => {
+    if (!tourInitialized.current) {
+      tourInitialized.current = true
+      createTourDriver(t, navigate)
+      startTourIfNeeded()
     }
   }, [t])
 
@@ -290,25 +120,18 @@ const App: React.FC = () => {
     setNativeTheme(appTheme)
     setTheme(appTheme)
     setTitlebar()
-  }, [appTheme, systemTheme])
+  }, [appTheme, systemTheme, setTheme, setTitlebar])
 
   useEffect(() => {
     applyTheme(customTheme || 'default.css').then(() => {
       setTitlebar()
     })
-  }, [customTheme])
+  }, [customTheme, setTitlebar])
 
   useEffect(() => {
     window.addEventListener('mouseup', onResizeEnd)
     return (): void => window.removeEventListener('mouseup', onResizeEnd)
-  }, [])
-
-  const onResizeEnd = (): void => {
-    if (resizingRef.current) {
-      setResizing(false)
-      patchAppConfig({ siderWidth: siderWidthValueRef.current })
-    }
-  }
+  }, [onResizeEnd])
 
   const onDragEnd = async (event: DragEndEvent): Promise<void> => {
     const { active, over } = event
@@ -438,17 +261,19 @@ const App: React.FC = () => {
           <div className="mt-2 mx-2">
             <OutboundModeSwitcher />
           </div>
-          <DndContext sensors={sensors} collisionDetection={closestCorners} onDragEnd={onDragEnd}>
-            <div className="grid grid-cols-2 gap-2 m-2">
-              <SortableContext items={order}>
-                {order.map((key: string) => {
-                  const Component = componentMap[key]
-                  if (!Component) return null
-                  return <Component key={key} />
-                })}
-              </SortableContext>
-            </div>
-          </DndContext>
+          <div style={{ overflowX: 'clip' }}>
+            <DndContext sensors={sensors} collisionDetection={closestCorners} onDragEnd={onDragEnd}>
+              <div className="grid grid-cols-2 gap-2 m-2">
+                <SortableContext items={order}>
+                  {order.map((key: string) => {
+                    const Component = componentMap[key]
+                    if (!Component) return null
+                    return <Component key={key} />
+                  })}
+                </SortableContext>
+              </div>
+            </DndContext>
+          </div>
         </div>
       )}
 

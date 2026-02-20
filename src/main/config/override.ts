@@ -1,11 +1,12 @@
-import { overrideConfigPath, overridePath } from '../utils/dirs'
-import { getControledMihomoConfig } from './controledMihomo'
 import { readFile, writeFile, rm } from 'fs/promises'
 import { existsSync } from 'fs'
+import { overrideConfigPath, overridePath } from '../utils/dirs'
 import * as chromeRequest from '../utils/chromeRequest'
 import { parse, stringify } from '../utils/yaml'
+import { getControledMihomoConfig } from './controledMihomo'
 
 let overrideConfig: IOverrideConfig // override.yaml
+let overrideConfigWriteQueue: Promise<void> = Promise.resolve()
 
 export async function getOverrideConfig(force = false): Promise<IOverrideConfig> {
   if (force || !overrideConfig) {
@@ -13,12 +14,16 @@ export async function getOverrideConfig(force = false): Promise<IOverrideConfig>
     overrideConfig = parse(data) || { items: [] }
   }
   if (typeof overrideConfig !== 'object') overrideConfig = { items: [] }
+  if (!Array.isArray(overrideConfig.items)) overrideConfig.items = []
   return overrideConfig
 }
 
 export async function setOverrideConfig(config: IOverrideConfig): Promise<void> {
-  overrideConfig = config
-  await writeFile(overrideConfigPath(), stringify(overrideConfig), 'utf-8')
+  overrideConfigWriteQueue = overrideConfigWriteQueue.then(async () => {
+    overrideConfig = config
+    await writeFile(overrideConfigPath(), stringify(overrideConfig), 'utf-8')
+  })
+  await overrideConfigWriteQueue
 }
 
 export async function getOverrideItem(id: string | undefined): Promise<IOverrideItem | undefined> {
@@ -43,16 +48,19 @@ export async function addOverrideItem(item: Partial<IOverrideItem>): Promise<voi
     await updateOverrideItem(newItem)
   } else {
     config.items.push(newItem)
+    await setOverrideConfig(config)
   }
-  await setOverrideConfig(config)
 }
 
 export async function removeOverrideItem(id: string): Promise<void> {
   const config = await getOverrideConfig()
   const item = await getOverrideItem(id)
-  config.items = config.items?.filter((item) => item.id !== id)
+  if (!item) return
+  config.items = config.items?.filter((i) => i.id !== id)
   await setOverrideConfig(config)
-  await rm(overridePath(id, item?.ext || 'js'))
+  if (existsSync(overridePath(id, item.ext))) {
+    await rm(overridePath(id, item.ext))
+  }
 }
 
 export async function createOverride(item: Partial<IOverrideItem>): Promise<IOverrideItem> {

@@ -1,3 +1,5 @@
+import { app, clipboard, ipcMain, Menu, nativeImage, shell, Tray } from 'electron'
+import { t } from 'i18next'
 import {
   changeCurrentProfile,
   getAppConfig,
@@ -23,8 +25,7 @@ import {
   getTrayIconStatus,
   calculateTrayIconStatus
 } from '../core/mihomoApi'
-import { mainWindow, showMainWindow, triggerMainWindow } from '..'
-import { app, clipboard, ipcMain, Menu, nativeImage, shell, Tray } from 'electron'
+import { mainWindow, showMainWindow, triggerMainWindow } from '../window'
 import { dataDir, logDir, mihomoCoreDir, mihomoWorkDir } from '../utils/dirs'
 import { triggerSysProxy } from '../sys/sysproxy'
 import {
@@ -34,11 +35,12 @@ import {
   requestTunPermissions,
   restartAsAdmin
 } from '../core/manager'
-import { floatingWindow, triggerFloatingWindow } from './floatingWindow'
-import { t } from 'i18next'
 import { trayLogger } from '../utils/logger'
+import { floatingWindow, triggerFloatingWindow } from './floatingWindow'
 
 export let tray: Tray | null = null
+// macOS 流量显示状态，避免异步读取配置导致的时序问题
+let macTrafficIconEnabled = false
 
 export const buildContextMenu = async (): Promise<Menu> => {
   // 添加调试日志
@@ -120,7 +122,7 @@ export const buildContextMenu = async (): Promise<Menu> => {
         groupsMenu = groupItems
         groupsMenu.unshift({ type: 'separator' })
       }
-    } catch (e) {
+    } catch {
       // ignore
       // 避免出错时无法创建托盘菜单
     }
@@ -206,7 +208,7 @@ export const buildContextMenu = async (): Promise<Menu> => {
           await patchAppConfig({ sysProxy: { enable } })
           mainWindow?.webContents.send('appConfigUpdated')
           floatingWindow?.webContents.send('appConfigUpdated')
-        } catch (e) {
+        } catch {
           // ignore
         } finally {
           ipcMain.emit('updateTrayMenu')
@@ -231,6 +233,7 @@ export const buildContextMenu = async (): Promise<Menu> => {
                 if (process.platform === 'win32') {
                   try {
                     await restartAsAdmin()
+                    return
                   } catch (error) {
                     await trayLogger.error('Failed to restart as admin from tray', error)
                     item.checked = false
@@ -250,6 +253,9 @@ export const buildContextMenu = async (): Promise<Menu> => {
               }
             } catch (error) {
               await trayLogger.warn('Permission check failed in tray', error)
+              item.checked = false
+              ipcMain.emit('updateTrayMenu')
+              return
             }
 
             await patchControledMihomoConfig({ tun: { enable }, dns: { enable: true } })
@@ -390,7 +396,10 @@ export async function createTray(): Promise<void> {
     if (!useDockIcon) {
       hideDockIcon()
     }
-    ipcMain.on('trayIconUpdate', async (_, png: string) => {
+    // 移除旧监听器防止累积
+    ipcMain.removeAllListeners('trayIconUpdate')
+    ipcMain.on('trayIconUpdate', async (_, png: string, enabled: boolean) => {
+      macTrafficIconEnabled = enabled
       const image = nativeImage.createFromDataURL(png).resize({ height: 16 })
       image.setTemplateImage(true)
       tray?.setImage(image)
@@ -435,6 +444,8 @@ export async function createTray(): Promise<void> {
         triggerMainWindow()
       }
     })
+    // 移除旧监听器防止累积
+    ipcMain.removeAllListeners('updateTrayMenu')
     ipcMain.on('updateTrayMenu', async () => {
       await updateTrayMenu()
     })
@@ -449,26 +460,42 @@ async function updateTrayMenu(): Promise<void> {
   }
 }
 
-export async function copyEnv(type: 'bash' | 'cmd' | 'powershell'): Promise<void> {
+export async function copyEnv(
+  type: 'bash' | 'cmd' | 'powershell' | 'fish' | 'nushell'
+): Promise<void> {
   const { 'mixed-port': mixedPort = 7890 } = await getControledMihomoConfig()
   const { sysProxy } = await getAppConfig()
   const { host } = sysProxy
+  const proxyUrl = `http://${host || '127.0.0.1'}:${mixedPort}`
+
   switch (type) {
     case 'bash': {
       clipboard.writeText(
-        `export https_proxy=http://${host || '127.0.0.1'}:${mixedPort} http_proxy=http://${host || '127.0.0.1'}:${mixedPort} all_proxy=http://${host || '127.0.0.1'}:${mixedPort}`
+        `export https_proxy=${proxyUrl} http_proxy=${proxyUrl} all_proxy=${proxyUrl}`
       )
       break
     }
     case 'cmd': {
       clipboard.writeText(
-        `set http_proxy=http://${host || '127.0.0.1'}:${mixedPort}\r\nset https_proxy=http://${host || '127.0.0.1'}:${mixedPort}`
+        `set http_proxy=${proxyUrl}\r\nset https_proxy=${proxyUrl}`
       )
       break
     }
     case 'powershell': {
       clipboard.writeText(
-        `$env:HTTP_PROXY="http://${host || '127.0.0.1'}:${mixedPort}"; $env:HTTPS_PROXY="http://${host || '127.0.0.1'}:${mixedPort}"`
+        `$env:HTTP_PROXY="${proxyUrl}"; $env:HTTPS_PROXY="${proxyUrl}"`
+      )
+      break
+    }
+    case 'fish': {
+      clipboard.writeText(
+        `set -x http_proxy ${proxyUrl}; set -x https_proxy ${proxyUrl}; set -x all_proxy ${proxyUrl}`
+      )
+      break
+    }
+    case 'nushell': {
+      clipboard.writeText(
+        `$env.HTTP_PROXY = "${proxyUrl}"; $env.HTTPS_PROXY = "${proxyUrl}"; $env.ALL_PROXY = "${proxyUrl}"`
       )
       break
     }
@@ -520,12 +547,15 @@ const getIconPaths = () => {
 
 export function updateTrayIconImmediate(sysProxyEnabled: boolean, tunEnabled: boolean): void {
   if (!tray) return
+  // macOS 流量显示开启时，由 trayIconUpdate 负责图标更新
+  if (process.platform === 'darwin' && macTrafficIconEnabled) return
 
   const status = calculateTrayIconStatus(sysProxyEnabled, tunEnabled)
   const iconPaths = getIconPaths()
 
   getAppConfig().then(({ disableTrayIconColor = false }) => {
     if (!tray) return
+    if (process.platform === 'darwin' && macTrafficIconEnabled) return
     const iconPath = disableTrayIconColor ? iconPaths.white : iconPaths[status]
     try {
       if (process.platform === 'darwin') {
@@ -536,14 +566,16 @@ export function updateTrayIconImmediate(sysProxyEnabled: boolean, tunEnabled: bo
       } else if (process.platform === 'linux') {
         tray.setImage(iconPath)
       }
-    } catch (error) {
-      console.error('更新托盘图标失败：', error)
+    } catch {
+      // Failed to update tray icon
     }
   })
 }
 
 export async function updateTrayIcon(): Promise<void> {
   if (!tray) return
+  // macOS 流量显示开启时，由 trayIconUpdate 负责图标更新
+  if (process.platform === 'darwin' && macTrafficIconEnabled) return
 
   const { disableTrayIconColor = false } = await getAppConfig()
   const status = await getTrayIconStatus()
@@ -559,7 +591,7 @@ export async function updateTrayIcon(): Promise<void> {
     } else if (process.platform === 'linux') {
       tray.setImage(iconPath)
     }
-  } catch (error) {
-    console.error('更新托盘图标失败：', error)
+  } catch {
+    // Failed to update tray icon
   }
 }

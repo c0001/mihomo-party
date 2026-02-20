@@ -2,11 +2,10 @@ import { Button, Card, CardBody, CardFooter, Tooltip } from '@heroui/react'
 import { FaCircleArrowDown, FaCircleArrowUp } from 'react-icons/fa6'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { calcTraffic } from '@renderer/utils/calc'
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { IoLink } from 'react-icons/io5'
-
 import { useAppConfig } from '@renderer/hooks/use-app-config'
 import { platform } from '@renderer/utils/init'
 import { Line } from 'react-chartjs-2'
@@ -24,11 +23,6 @@ import { useTranslation } from 'react-i18next'
 
 // 注册 Chart.js 组件
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler)
-
-let currentUpload: number | undefined = undefined
-let currentDownload: number | undefined = undefined
-let hasShowTraffic = false
-let drawing = false
 
 interface Props {
   iconOnly?: boolean
@@ -60,6 +54,14 @@ const ConnCard: React.FC<Props> = (props) => {
     id: 'connection'
   })
   const [series, setSeries] = useState(Array(10).fill(0))
+
+  // 使用 useRef 替代模块级变量
+  const currentUploadRef = useRef<number | undefined>(undefined)
+  const currentDownloadRef = useRef<number | undefined>(undefined)
+  const hasShowTrafficRef = useRef(false)
+  const drawingRef = useRef(false)
+  // 保存待绘制的流量数据，避免跳过更新导致图标闪烁
+  const pendingTrafficRef = useRef<{ up: number; down: number } | null>(null)
 
   // Chart.js 配置
   const chartData = useMemo(() => {
@@ -125,35 +127,54 @@ const ConnCard: React.FC<Props> = (props) => {
   }
 
   const transform = tf ? { x: tf.x, y: tf.y, scaleX: 1, scaleY: 1 } : null
-  useEffect(() => {
-    window.electron.ipcRenderer.on('mihomoTraffic', async (_e, info: IMihomoTrafficInfo) => {
+
+  // 使用 useCallback 创建稳定的 handler 引用
+  const handleTraffic = useCallback(
+    async (_e: unknown, ...args: unknown[]) => {
+      const info = args[0] as IMihomoTrafficInfo
       setUpload(info.up)
       setDownload(info.down)
-      const data = series
-      data.shift()
-      data.push(info.up + info.down)
-      setSeries([...data])
-      if (platform === 'darwin' && showTraffic) {
-        if (drawing) return
-        drawing = true
-        try {
-          await drawSvg(info.up, info.down)
-          hasShowTraffic = true
-        } catch {
-          // ignore
-        } finally {
-          drawing = false
+      setSeries((prev) => {
+        const data = [...prev]
+        data.shift()
+        data.push(info.up + info.down)
+        return data
+      })
+      if (platform === 'darwin') {
+        if (showTraffic) {
+          // 保存最新流量数据，确保绘制完成后使用最新值
+          pendingTrafficRef.current = { up: info.up, down: info.down }
+          if (drawingRef.current) return
+          drawingRef.current = true
+          try {
+            // 循环处理待绘制数据，直到没有新数据
+            while (pendingTrafficRef.current) {
+              const { up, down } = pendingTrafficRef.current
+              pendingTrafficRef.current = null
+              await drawSvg(up, down, currentUploadRef, currentDownloadRef)
+            }
+            hasShowTrafficRef.current = true
+          } catch {
+            // ignore
+          } finally {
+            drawingRef.current = false
+          }
+        } else if (hasShowTrafficRef.current) {
+          // 只在从 showTraffic=true 切换到 false 时恢复一次原始图标
+          window.electron.ipcRenderer.send('trayIconUpdate', trayIconBase64, false)
+          hasShowTrafficRef.current = false
         }
-      } else {
-        if (!hasShowTraffic) return
-        window.electron.ipcRenderer.send('trayIconUpdate', trayIconBase64)
-        hasShowTraffic = false
       }
-    })
+    },
+    [showTraffic]
+  )
+
+  useEffect(() => {
+    window.electron.ipcRenderer.on('mihomoTraffic', handleTraffic)
     return (): void => {
-      window.electron.ipcRenderer.removeAllListeners('mihomoTraffic')
+      window.electron.ipcRenderer.removeListener('mihomoTraffic', handleTraffic)
     }
-  }, [showTraffic])
+  }, [handleTraffic])
 
   if (iconOnly) {
     return (
@@ -192,8 +213,13 @@ const ConnCard: React.FC<Props> = (props) => {
             ref={setNodeRef}
             {...attributes}
             {...listeners}
-            className={`${match ? 'bg-primary' : 'hover:bg-primary/30'} ${isDragging ? `${disableAnimations ? '' : 'scale-[0.95] tap-highlight-transparent'}` : ''}`}
+            className={`${match ? 'bg-primary' : 'hover:bg-primary/30'} ${disableAnimations ? '' : `motion-reduce:transition-transform-background ${isDragging  ? 'scale-[0.95] tap-highlight-transparent' : ''}`}`}
           >
+            {!hideConnectionCardWave && (
+              <div className="w-full h-full absolute top-0 left-0 pointer-events-none overflow-hidden rounded-[14px]">
+                <Line data={chartData} options={chartOptions} />
+              </div>
+            )}
             <CardBody className="pb-1 pt-0 px-0">
               <div className="flex justify-between">
                 <Button
@@ -229,11 +255,6 @@ const ConnCard: React.FC<Props> = (props) => {
               </h3>
             </CardFooter>
           </Card>
-          {!hideConnectionCardWave && (
-            <div className="w-full h-full absolute top-0 left-0 pointer-events-none overflow-hidden rounded-[14px]">
-              <Line data={chartData} options={chartOptions} />
-            </div>
-          )}
         </>
       ) : (
         <Card
@@ -241,7 +262,7 @@ const ConnCard: React.FC<Props> = (props) => {
           ref={setNodeRef}
           {...attributes}
           {...listeners}
-          className={`${match ? 'bg-primary' : 'hover:bg-primary/30'} ${isDragging ? `${disableAnimations ? '' : 'scale-[0.95] tap-highlight-transparent'}` : ''}`}
+          className={`${match ? 'bg-primary' : 'hover:bg-primary/30'} ${disableAnimations ? '' : `motion-reduce:transition-transform-background ${isDragging  ? 'scale-[0.95] tap-highlight-transparent' : ''}`}`}
         >
           <CardBody className="pb-1 pt-0 px-0">
             <div className="flex justify-between">
@@ -273,13 +294,18 @@ const ConnCard: React.FC<Props> = (props) => {
 
 export default ConnCard
 
-const drawSvg = async (upload: number, download: number): Promise<void> => {
-  if (upload === currentUpload && download === currentDownload) return
-  currentUpload = upload
-  currentDownload = download
-  const svg = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 36"><image height="36" width="36" href="${trayIconBase64}"/><text x="140" y="15" font-size="18" font-family="PingFang SC" font-weight="bold" text-anchor="end">${calcTraffic(upload)}/s</text><text x="140" y="34" font-size="18" font-family="PingFang SC" font-weight="bold" text-anchor="end">${calcTraffic(download)}/s</text></svg>`
+const drawSvg = async (
+  upload: number,
+  download: number,
+  currentUploadRef: React.RefObject<number | undefined>,
+  currentDownloadRef: React.RefObject<number | undefined>
+): Promise<void> => {
+  if (upload === currentUploadRef.current && download === currentDownloadRef.current) return
+  currentUploadRef.current = upload
+  currentDownloadRef.current = download
+  const svg = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 156 36"><image height="36" width="36" href="${trayIconBase64}"/><text x="156" y="15" font-size="18" font-family="PingFang SC" font-weight="bold" text-anchor="end" fill="black">${calcTraffic(upload)}/s</text><text x="156" y="34" font-size="18" font-family="PingFang SC" font-weight="bold" text-anchor="end" fill="black">${calcTraffic(download)}/s</text></svg>`
   const image = await loadImage(svg)
-  window.electron.ipcRenderer.send('trayIconUpdate', image)
+  window.electron.ipcRenderer.send('trayIconUpdate', image, true)
 }
 
 const loadImage = (url: string): Promise<string> => {

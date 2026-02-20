@@ -1,64 +1,46 @@
-import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { electronApp, optimizer } from '@electron-toolkit/utils'
+import { app, dialog } from 'electron'
+import i18next from 'i18next'
+import { initI18n } from '../shared/i18n'
 import { registerIpcMainHandlers } from './utils/ipc'
-import windowStateKeeper from 'electron-window-state'
-import { app, shell, BrowserWindow, Menu, dialog, Notification, powerMonitor } from 'electron'
-import { addProfileItem, getAppConfig, patchAppConfig } from './config'
+import { getAppConfig, patchAppConfig } from './config'
 import {
-  quitWithoutCore,
   startCore,
-  stopCore,
   checkAdminRestartForTun,
   checkHighPrivilegeCore,
   restartAsAdmin,
-  initAdminStatus
+  initAdminStatus,
+  checkAdminPrivileges,
+  initCoreWatcher
 } from './core/manager'
-import { triggerSysProxy } from './sys/sysproxy'
-import icon from '../../resources/icon.png?asset'
-import { createTray, hideDockIcon, showDockIcon } from './resolve/tray'
+import { createTray } from './resolve/tray'
 import { init, initBasic, safeShowErrorBox } from './utils/init'
-import { join } from 'path'
 import { initShortcut } from './resolve/shortcut'
-import { spawn, exec } from 'child_process'
-import { promisify } from 'util'
-import { stat } from 'fs/promises'
 import { initProfileUpdater } from './core/profileUpdater'
-import { existsSync } from 'fs'
-import { exePath } from './utils/dirs'
 import { startMonitor } from './resolve/trafficMonitor'
 import { showFloatingWindow } from './resolve/floatingWindow'
-import { initI18n } from '../shared/i18n'
-import i18next from 'i18next'
-import { logger } from './utils/logger'
+import { logger, createLogger } from './utils/logger'
 import { initWebdavBackupScheduler } from './resolve/backup'
+import {
+  createWindow,
+  mainWindow,
+  showMainWindow,
+  triggerMainWindow,
+  closeMainWindow
+} from './window'
+import { handleDeepLink } from './deeplink'
+import {
+  fixUserDataPermissions,
+  setupPlatformSpecifics,
+  setupAppLifecycle,
+  getSystemLanguage
+} from './lifecycle'
 
-async function fixUserDataPermissions(): Promise<void> {
-  if (process.platform !== 'darwin') return
+const mainLogger = createLogger('Main')
 
-  const userDataPath = app.getPath('userData')
-  if (!existsSync(userDataPath)) return
-
-  try {
-    const stats = await stat(userDataPath)
-    const currentUid = process.getuid?.() || 0
-
-    if (stats.uid === 0 && currentUid !== 0) {
-      const execPromise = promisify(exec)
-      const username = process.env.USER || process.env.LOGNAME
-      if (username) {
-        await execPromise(`chown -R "${username}:staff" "${userDataPath}"`)
-        await execPromise(`chmod -R u+rwX "${userDataPath}"`)
-      }
-    }
-  } catch {
-    // ignore
-  }
-}
-
-let quitTimeout: NodeJS.Timeout | null = null
-export let mainWindow: BrowserWindow | null = null
+export { mainWindow, showMainWindow, triggerMainWindow, closeMainWindow }
 
 const gotTheLock = app.requestSingleInstanceLock()
-
 if (!gotTheLock) {
   app.quit()
 }
@@ -72,84 +54,66 @@ initApp().catch((e) => {
   app.quit()
 })
 
-export function customRelaunch(): void {
-  const script = `while kill -0 ${process.pid} 2>/dev/null; do
-  sleep 0.1
-done
-${process.argv.join(' ')} & disown
-exit
-`
-  spawn('sh', ['-c', `"${script}"`], {
-    shell: true,
-    detached: true,
-    stdio: 'ignore'
-  })
-}
+setupPlatformSpecifics()
 
-if (process.platform === 'linux') {
-  app.relaunch = customRelaunch
-}
-
-if (process.platform === 'win32' && !exePath().startsWith('C')) {
-  // https://github.com/electron/electron/issues/43278
-  // https://github.com/electron/electron/issues/36698
-  app.commandLine.appendSwitch('in-process-gpu')
-}
-
-// 运行内核检测
 async function checkHighPrivilegeCoreEarly(): Promise<void> {
-  if (process.platform !== 'win32') {
-    return
-  }
+  if (process.platform !== 'win32') return
 
   try {
     await initBasic()
-
-    const { checkAdminPrivileges } = await import('./core/manager')
     const isCurrentAppAdmin = await checkAdminPrivileges()
-
-    if (isCurrentAppAdmin) {
-      console.log('Current app is running as administrator, skipping privilege check')
-      return
-    }
+    if (isCurrentAppAdmin) return
 
     const hasHighPrivilegeCore = await checkHighPrivilegeCore()
-    if (hasHighPrivilegeCore) {
+    if (!hasHighPrivilegeCore) return
+
+    try {
+      const appConfig = await getAppConfig()
+      const language = appConfig.language || (app.getLocale().startsWith('zh') ? 'zh-CN' : 'en-US')
+      await initI18n({ lng: language })
+    } catch {
+      await initI18n({ lng: 'zh-CN' })
+    }
+
+    const choice = dialog.showMessageBoxSync({
+      type: 'warning',
+      title: i18next.t('core.highPrivilege.title'),
+      message: i18next.t('core.highPrivilege.message'),
+      buttons: [i18next.t('common.confirm'), i18next.t('common.cancel')],
+      defaultId: 0,
+      cancelId: 1
+    })
+
+    if (choice === 0) {
       try {
-        const appConfig = await getAppConfig()
-        const language =
-          appConfig.language || (app.getLocale().startsWith('zh') ? 'zh-CN' : 'en-US')
-        await initI18n({ lng: language })
-      } catch {
-        await initI18n({ lng: 'zh-CN' })
+        await restartAsAdmin(false)
+        app.exit(0)
+      } catch (error) {
+        safeShowErrorBox('common.error.adminRequired', `${error}`)
+        app.exit(1)
       }
-
-      const choice = dialog.showMessageBoxSync({
-        type: 'warning',
-        title: i18next.t('core.highPrivilege.title'),
-        message: i18next.t('core.highPrivilege.message'),
-        buttons: [i18next.t('common.confirm'), i18next.t('common.cancel')],
-        defaultId: 0,
-        cancelId: 1
-      })
-
-      if (choice === 0) {
-        try {
-          // Windows 平台重启应用获取管理员权限
-          await restartAsAdmin(false)
-          process.exit(0)
-        } catch (error) {
-          safeShowErrorBox('common.error.adminRequired', `${error}`)
-          process.exit(1)
-        }
-      } else {
-        process.exit(0)
-      }
+    } else {
+      app.exit(0)
     }
   } catch (e) {
-    console.error('Failed to check high privilege core:', e)
+    mainLogger.error('Failed to check high privilege core', e)
   }
 }
+
+async function initHardwareAcceleration(): Promise<void> {
+  try {
+    await initBasic()
+    const { disableHardwareAcceleration = false } = await getAppConfig()
+    if (disableHardwareAcceleration) {
+      app.disableHardwareAcceleration()
+    }
+  } catch (e) {
+    mainLogger.warn('Failed to read hardware acceleration config', e)
+  }
+}
+
+initHardwareAcceleration()
+setupAppLifecycle()
 
 app.on('second-instance', async (_event, commandline) => {
   showMainWindow()
@@ -164,288 +128,96 @@ app.on('open-url', async (_event, url) => {
   await handleDeepLink(url)
 })
 
-app.on('before-quit', async (e) => {
-  e.preventDefault()
-  triggerSysProxy(false)
-  await stopCore()
-  app.exit()
-})
-
-powerMonitor.on('shutdown', async () => {
-  triggerSysProxy(false)
-  await stopCore()
-  app.exit()
-})
-
-// 获取系统语言
-function getSystemLanguage(): 'zh-CN' | 'en-US' {
-  const locale = app.getLocale()
-  return locale.startsWith('zh') ? 'zh-CN' : 'en-US'
-}
-
-// 硬件加速设置
-async function initHardwareAcceleration(): Promise<void> {
-  try {
-    await initBasic()
-    const { disableHardwareAcceleration = false } = await getAppConfig()
-    if (disableHardwareAcceleration) {
-      app.disableHardwareAcceleration()
-    }
-  } catch (e) {
-    console.warn('Failed to read hardware acceleration config:', e)
-  }
-}
-
-initHardwareAcceleration()
-
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
-app.whenReady().then(async () => {
-  // Set app user model id for windows
-  electronApp.setAppUserModelId('party.mihomo.app')
-
+const initPromise = (async () => {
   await initBasic()
-
   await checkHighPrivilegeCoreEarly()
-
   await initAdminStatus()
 
   try {
     await init()
-
     const appConfig = await getAppConfig()
-    // 如果配置中没有语言设置，则使用系统语言
     if (!appConfig.language) {
       const systemLanguage = getSystemLanguage()
       await patchAppConfig({ language: systemLanguage })
       appConfig.language = systemLanguage
     }
     await initI18n({ lng: appConfig.language })
+    return appConfig
   } catch (e) {
     safeShowErrorBox('common.error.initFailed', `${e}`)
     app.quit()
+    throw e
   }
+})()
 
-  try {
-    const [startPromise] = await startCore()
-    startPromise.then(async () => {
-      await initProfileUpdater()
-      await initWebdavBackupScheduler() // 初始化 WebDAV 定时备份任务
-      // 上次是否为了开启 TUN 而重启
-      await checkAdminRestartForTun()
-    })
-  } catch (e) {
-    safeShowErrorBox('mihomo.error.coreStartFailed', `${e}`)
-  }
-  try {
-    await startMonitor()
-  } catch {
-    // ignore
-  }
+app.whenReady().then(async () => {
+  electronApp.setAppUserModelId('party.mihomo.app')
 
-  // Default open or close DevTools by F12 in development
-  // and ignore CommandOrControl + R in production.
-  // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
+  const appConfig = await initPromise
+
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
-  const { showFloatingWindow: showFloating = false, disableTray = false } = await getAppConfig()
+
   registerIpcMainHandlers()
-  await createWindow()
-  if (showFloating) {
+
+  const createWindowPromise = createWindow()
+
+  let coreStarted = false
+  const coreStartPromise = (async (): Promise<void> => {
     try {
-      await showFloatingWindow()
-    } catch (error) {
-      await logger.error('Failed to create floating window on startup', error)
+      initCoreWatcher()
+      const startPromises = await startCore()
+      if (startPromises.length > 0) {
+        startPromises[0].then(async () => {
+          await initProfileUpdater()
+          await initWebdavBackupScheduler()
+          await checkAdminRestartForTun()
+        })
+      }
+      coreStarted = true
+    } catch (e) {
+      safeShowErrorBox('mihomo.error.coreStartFailed', `${e}`)
     }
+  })()
+
+  const monitorPromise = (async (): Promise<void> => {
+    try {
+      await startMonitor()
+    } catch {
+      // ignore
+    }
+  })()
+
+  await createWindowPromise
+
+  const { showFloatingWindow: showFloating = false, disableTray = false } = appConfig
+  const uiTasks: Promise<void>[] = [initShortcut()]
+
+  if (showFloating) {
+    uiTasks.push(
+      (async () => {
+        try {
+          await showFloatingWindow()
+        } catch (error) {
+          await logger.error('Failed to create floating window on startup', error)
+        }
+      })()
+    )
   }
+
   if (!disableTray) {
-    await createTray()
+    uiTasks.push(createTray())
   }
-  await initShortcut()
-  app.on('activate', function () {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
+
+  await Promise.all(uiTasks)
+  await Promise.all([coreStartPromise, monitorPromise])
+
+  if (coreStarted) {
+    mainWindow?.webContents.send('core-started')
+  }
+
+  app.on('activate', () => {
     showMainWindow()
   })
 })
-
-async function handleDeepLink(url: string): Promise<void> {
-  if (!url.startsWith('clash://') && !url.startsWith('mihomo://')) return
-
-  const urlObj = new URL(url)
-  switch (urlObj.host) {
-    case 'install-config': {
-      try {
-        const profileUrl = urlObj.searchParams.get('url')
-        const profileName = urlObj.searchParams.get('name')
-        if (!profileUrl) {
-          throw new Error(i18next.t('profiles.error.urlParamMissing'))
-        }
-        await addProfileItem({
-          type: 'remote',
-          name: profileName ?? undefined,
-          url: profileUrl
-        })
-        mainWindow?.webContents.send('profileConfigUpdated')
-        new Notification({ title: i18next.t('profiles.notification.importSuccess') }).show()
-        break
-      } catch (e) {
-        safeShowErrorBox('profiles.error.importFailed', `${url}\n${e}`)
-      }
-    }
-  }
-}
-
-export async function createWindow(): Promise<void> {
-  const { useWindowFrame = false } = await getAppConfig()
-  const mainWindowState = windowStateKeeper({
-    defaultWidth: 800,
-    defaultHeight: 600,
-    file: 'window-state.json'
-  })
-  // https://github.com/electron/electron/issues/16521#issuecomment-582955104
-  Menu.setApplicationMenu(null)
-  mainWindow = new BrowserWindow({
-    minWidth: 800,
-    minHeight: 600,
-    width: mainWindowState.width,
-    height: mainWindowState.height,
-    x: mainWindowState.x,
-    y: mainWindowState.y,
-    show: false,
-    frame: useWindowFrame,
-    fullscreenable: false,
-    titleBarStyle: useWindowFrame ? 'default' : 'hidden',
-    titleBarOverlay: useWindowFrame
-      ? false
-      : {
-          height: 49
-        },
-    autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon: icon } : {}),
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      spellcheck: false,
-      sandbox: false,
-      devTools: true
-    }
-  })
-  mainWindowState.manage(mainWindow)
-  mainWindow.on('ready-to-show', async () => {
-    const {
-      silentStart = false,
-      autoQuitWithoutCore = false,
-      autoQuitWithoutCoreDelay = 60
-    } = await getAppConfig()
-    if (autoQuitWithoutCore && !mainWindow?.isVisible()) {
-      if (quitTimeout) {
-        clearTimeout(quitTimeout)
-      }
-      quitTimeout = setTimeout(async () => {
-        await quitWithoutCore()
-      }, autoQuitWithoutCoreDelay * 1000)
-    }
-    if (!silentStart) {
-      if (quitTimeout) {
-        clearTimeout(quitTimeout)
-      }
-      mainWindow?.show()
-      mainWindow?.focusOnWebView()
-    }
-  })
-  mainWindow.webContents.on('did-fail-load', () => {
-    mainWindow?.webContents.reload()
-  })
-
-  mainWindow.on('show', () => {
-    showDockIcon()
-  })
-
-  mainWindow.on('close', async (event) => {
-    event.preventDefault()
-    mainWindow?.hide()
-    const {
-      autoQuitWithoutCore = false,
-      autoQuitWithoutCoreDelay = 60,
-      useDockIcon = true
-    } = await getAppConfig()
-    if (!useDockIcon) {
-      hideDockIcon()
-    }
-    if (autoQuitWithoutCore) {
-      if (quitTimeout) {
-        clearTimeout(quitTimeout)
-      }
-      quitTimeout = setTimeout(async () => {
-        await quitWithoutCore()
-      }, autoQuitWithoutCoreDelay * 1000)
-    }
-  })
-
-  mainWindow.on('resized', () => {
-    if (mainWindow) mainWindowState.saveState(mainWindow)
-  })
-
-  mainWindow.on('move', () => {
-    if (mainWindow) mainWindowState.saveState(mainWindow)
-  })
-
-  mainWindow.on('session-end', async () => {
-    triggerSysProxy(false)
-    await stopCore()
-  })
-
-  mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
-  })
-
-  // 在开发模式下自动打开 DevTools
-  if (is.dev) {
-    mainWindow.webContents.openDevTools()
-  }
-
-  // HMR for renderer base on electron-vite cli.
-  // Load the remote URL for development or the local html file for production.
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-  } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
-  }
-}
-
-export function triggerMainWindow(force?: boolean): void {
-  if (mainWindow) {
-    getAppConfig()
-      .then(({ triggerMainWindowBehavior = 'toggle' }) => {
-        if (force === true || triggerMainWindowBehavior === 'toggle') {
-          if (mainWindow?.isVisible()) {
-            closeMainWindow()
-          } else {
-            showMainWindow()
-          }
-        } else {
-          showMainWindow()
-        }
-      })
-      .catch(showMainWindow)
-  }
-}
-
-export function showMainWindow(): void {
-  if (mainWindow) {
-    if (quitTimeout) {
-      clearTimeout(quitTimeout)
-    }
-    mainWindow.show()
-    mainWindow.focusOnWebView()
-  }
-}
-
-export function closeMainWindow(): void {
-  if (mainWindow) {
-    mainWindow.close()
-  }
-}
