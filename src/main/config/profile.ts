@@ -28,7 +28,7 @@ export async function getProfileConfig(force = false): Promise<IProfileConfig> {
   }
   if (typeof profileConfig !== 'object') profileConfig = { items: [] }
   if (!Array.isArray(profileConfig.items)) profileConfig.items = []
-  return structuredClone(profileConfig)
+  return JSON.parse(JSON.stringify(profileConfig))
 }
 
 export async function setProfileConfig(config: IProfileConfig): Promise<void> {
@@ -48,12 +48,12 @@ export async function updateProfileConfig(
     profileConfig = parse(data) || { items: [] }
     if (typeof profileConfig !== 'object') profileConfig = { items: [] }
     if (!Array.isArray(profileConfig.items)) profileConfig.items = []
-    profileConfig = await updater(structuredClone(profileConfig))
+    profileConfig = await updater(JSON.parse(JSON.stringify(profileConfig)))
     result = profileConfig
     await writeFile(profileConfigPath(), stringify(profileConfig), 'utf-8')
   })
   await profileConfigWriteQueue
-  return structuredClone(result ?? profileConfig)
+  return JSON.parse(JSON.stringify(result ?? profileConfig))
 }
 
 export async function getProfileItem(id: string | undefined): Promise<IProfileItem | undefined> {
@@ -107,6 +107,7 @@ export async function updateProfileItem(item: IProfileItem): Promise<void> {
 export async function addProfileItem(item: Partial<IProfileItem>): Promise<void> {
   const newItem = await createProfile(item)
   let shouldChangeCurrent = false
+  let newProfileIsCurrentAfterUpdate = false
   await updateProfileConfig((config) => {
     const existingIndex = config.items.findIndex((i) => i.id === newItem.id)
     if (existingIndex !== -1) {
@@ -116,9 +117,24 @@ export async function addProfileItem(item: Partial<IProfileItem>): Promise<void>
     }
     if (!config.current) {
       shouldChangeCurrent = true
+      newProfileIsCurrentAfterUpdate = true
     }
     return config
   })
+
+  // If the new profile will become the current profile, ensure generateProfile is called
+  // to prepare working directory before restarting core
+  if (newProfileIsCurrentAfterUpdate) {
+    const { diffWorkDir } = await getAppConfig()
+    if (diffWorkDir) {
+      try {
+        const { generateProfile } = await import('../core/factory')
+        await generateProfile()
+      } catch (error) {
+        profileLogger.warn('Failed to generate profile for new subscription', error)
+      }
+    }
+  }
 
   if (shouldChangeCurrent) {
     await changeCurrentProfile(newItem.id)
@@ -232,6 +248,7 @@ export async function createProfile(item: Partial<IProfileItem>): Promise<IProfi
     allowFixedInterval: item.allowFixedInterval || false,
     autoUpdate: item.autoUpdate ?? false,
     authToken: item.authToken,
+    userAgent: item.userAgent,
     updated: new Date().getTime(),
     updateTimeout: item.updateTimeout || 5
   }
@@ -252,7 +269,7 @@ export async function createProfile(item: Partial<IProfileItem>): Promise<IProfi
   const baseOptions: Omit<FetchOptions, 'useProxy' | 'timeout'> = {
     url: item.url,
     mixedPort,
-    userAgent: userAgent || `mihomo.party/v${app.getVersion()} (clash.meta)`,
+    userAgent: item.userAgent || userAgent || `mihomo.party/v${app.getVersion()} (clash.meta)`,
     authToken: item.authToken,
     substore: newItem.substore || false
   }
