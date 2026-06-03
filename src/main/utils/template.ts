@@ -12,7 +12,9 @@ export const defaultConfig: IAppConfig = {
   showCurrentProxyInTray: false,
   trayProxyGroupStyle: 'default',
   disableTrayIconColor: false,
+  customTrayIcon: '',
   maxLogDays: 7,
+  maxLogFileSize: 10,
   proxyCols: 'auto',
   connectionDirection: 'asc',
   connectionOrderBy: 'time',
@@ -22,6 +24,7 @@ export const defaultConfig: IAppConfig = {
   autoCheckUpdate: true,
   autoCloseConnection: true,
   subscriptionTimeout: 30000,
+  networkLatencyTargets: [],
   useNameserverPolicy: false,
   controlDns: true,
   controlSniff: true,
@@ -58,7 +61,9 @@ export const defaultConfig: IAppConfig = {
   enableRedirPort: false,
   showTproxyPort: 0,
   enableTproxyPort: false,
-  testProfileOnStart: true
+  testProfileOnStart: true,
+  useHotReloadProfile: false,
+  hotReloadProfileAutoCloseConnection: false
 }
 
 export const defaultControledMihomoConfig: Partial<IMihomoConfig> = {

@@ -1,16 +1,20 @@
 import BasePage from '@renderer/components/base/base-page'
-import React, { useState, useEffect, useCallback } from 'react'
-import { Button, Select, SelectItem, Chip, Tooltip } from '@heroui/react'
+import NetworkTopologyCard from '@renderer/components/network/network-topology'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import { Button, Select, SelectItem, Chip, Tooltip, Input } from '@heroui/react'
 import {
   IoRefresh,
   IoCopyOutline,
   IoCheckmark,
   IoEyeOutline,
-  IoEyeOffOutline
+  IoEyeOffOutline,
+  IoAdd,
+  IoClose
 } from 'react-icons/io5'
 import { IoMdGlobe, IoMdPulse } from 'react-icons/io'
 import { useTranslation } from 'react-i18next'
 import { fetchIPInfo, measureLatency } from '@renderer/utils/ipc'
+import { useAppConfig } from '@renderer/hooks/use-app-config'
 
 type IPProvider = 'ip.sb' | 'ipwho.is' | 'ipapi.is'
 
@@ -103,11 +107,67 @@ interface LatencyResult {
   status: LatencyStatus
 }
 
-const LATENCY_TARGETS = [
+interface LatencyTarget {
+  name: string
+  url: string
+  custom?: boolean
+}
+
+const DEFAULT_LATENCY_TARGETS: LatencyTarget[] = [
   { name: 'Google', url: 'https://www.google.com/generate_204' },
   { name: 'Cloudflare', url: 'https://www.cloudflare.com/cdn-cgi/trace' },
-  { name: 'GitHub', url: 'https://github.com' }
+  { name: 'GitHub', url: 'https://github.com/' }
 ]
+
+function normalizeLatencyUrl(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+
+  const urlText = /^[a-z][a-z\d+\-.]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+  try {
+    const url = new URL(urlText)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
+function normalizeLatencyTarget(
+  value: string | Partial<INetworkLatencyTarget>
+): INetworkLatencyTarget | null {
+  if (typeof value === 'string') {
+    const url = normalizeLatencyUrl(value)
+    if (!url) return null
+    return { name: getLatencyTargetName(url), url }
+  }
+
+  const url = normalizeLatencyUrl(value.url ?? '')
+  if (!url) return null
+  return { name: value.name?.trim() || getLatencyTargetName(url), url }
+}
+
+function normalizeLatencyTargets(
+  values: Array<string | Partial<INetworkLatencyTarget>> = []
+): INetworkLatencyTarget[] {
+  const result: INetworkLatencyTarget[] = []
+  const seen = new Set<string>()
+  for (const value of values) {
+    const target = normalizeLatencyTarget(value)
+    if (!target || seen.has(target.url)) continue
+    seen.add(target.url)
+    result.push(target)
+  }
+  return result
+}
+
+function getLatencyTargetName(url: string): string {
+  try {
+    return new URL(url).hostname || url
+  } catch {
+    return url
+  }
+}
 
 function latencyColor(latency: number | null): string {
   if (latency === null) return ''
@@ -150,27 +210,131 @@ const InfoRow: React.FC<InfoRowProps> = ({ label, value, mono }) => (
 
 const IPPage: React.FC = () => {
   const { t } = useTranslation()
-  const [provider, setProvider] = useState<IPProvider>('ip.sb')
+  const { appConfig, patchAppConfig } = useAppConfig()
+  const [provider, setProvider] = useState<IPProvider>(
+    (appConfig?.networkIPProvider as IPProvider) ?? 'ip.sb'
+  )
   const [ipInfo, setIpInfo] = useState<IPInfo | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [hidden, setHidden] = useState(false)
+  const [isAddingLatencyTarget, setIsAddingLatencyTarget] = useState(false)
+  const [customLatencyName, setCustomLatencyName] = useState('')
+  const [customLatencyUrl, setCustomLatencyUrl] = useState('')
+  const [customLatencyNameError, setCustomLatencyNameError] = useState(false)
+  const [customLatencyUrlError, setCustomLatencyUrlError] = useState(false)
 
   // latency state: map from url -> result
   const [latencyResults, setLatencyResults] = useState<Record<string, LatencyResult>>({})
   const [testingLatency, setTestingLatency] = useState(false)
+  const appConfigLoaded = appConfig !== undefined
+
+  const customLatencyTargets = useMemo(
+    () => normalizeLatencyTargets(appConfig?.networkLatencyTargets),
+    [appConfig?.networkLatencyTargets]
+  )
+
+  const latencyTargets = useMemo(() => {
+    const defaultUrls = new Set(DEFAULT_LATENCY_TARGETS.map((target) => target.url))
+    return [
+      ...DEFAULT_LATENCY_TARGETS,
+      ...customLatencyTargets
+        .filter((target) => !defaultUrls.has(target.url))
+        .map((target) => ({ ...target, custom: true }))
+    ]
+  }, [customLatencyTargets])
+
+  const patchCustomLatencyTargets = useCallback(
+    async (targets: Array<string | Partial<INetworkLatencyTarget>>) => {
+      const defaultUrls = new Set(DEFAULT_LATENCY_TARGETS.map((target) => target.url))
+      await patchAppConfig({
+        networkLatencyTargets: normalizeLatencyTargets(targets).filter(
+          (target) => !defaultUrls.has(target.url)
+        )
+      })
+    },
+    [patchAppConfig]
+  )
+
+  const closeLatencyTargetForm = useCallback(() => {
+    setIsAddingLatencyTarget(false)
+    setCustomLatencyName('')
+    setCustomLatencyUrl('')
+    setCustomLatencyNameError(false)
+    setCustomLatencyUrlError(false)
+  }, [])
+
+  const addCustomLatencyTarget = useCallback(async () => {
+    const name = customLatencyName.trim()
+    const url = normalizeLatencyUrl(customLatencyUrl)
+    setCustomLatencyNameError(!name)
+    setCustomLatencyUrlError(!url)
+    if (!name || !url) return
+
+    const existingUrls = new Set(DEFAULT_LATENCY_TARGETS.map((target) => target.url))
+    if (!existingUrls.has(url)) {
+      await patchCustomLatencyTargets([
+        ...customLatencyTargets.filter((target) => target.url !== url),
+        { name, url }
+      ])
+    }
+    closeLatencyTargetForm()
+  }, [
+    closeLatencyTargetForm,
+    customLatencyName,
+    customLatencyTargets,
+    customLatencyUrl,
+    patchCustomLatencyTargets
+  ])
+
+  const openLatencyTargetForm = useCallback(() => {
+    setIsAddingLatencyTarget(true)
+  }, [])
+
+  const updateCustomLatencyName = useCallback((value: string) => {
+    setCustomLatencyName(value)
+    setCustomLatencyNameError(false)
+  }, [])
+
+  const updateCustomLatencyUrl = useCallback((value: string) => {
+    setCustomLatencyUrl(value)
+    setCustomLatencyUrlError(false)
+  }, [])
+
+  const submitLatencyTargetOnEnter = useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (event.key !== 'Enter') return
+      event.preventDefault()
+      addCustomLatencyTarget()
+    },
+    [addCustomLatencyTarget]
+  )
+
+  const removeCustomLatencyTarget = useCallback(
+    async (url: string) => {
+      await patchCustomLatencyTargets(
+        customLatencyTargets.filter((targetUrl) => targetUrl.url !== url)
+      )
+      setLatencyResults((prev) => {
+        const next = { ...prev }
+        delete next[url]
+        return next
+      })
+    },
+    [customLatencyTargets, patchCustomLatencyTargets]
+  )
 
   const testAllLatencies = useCallback(async () => {
     setTestingLatency(true)
     // mark all as pending first
     setLatencyResults(
       Object.fromEntries(
-        LATENCY_TARGETS.map((t) => [t.url, { latency: null, status: 'pending' as LatencyStatus }])
+        latencyTargets.map((t) => [t.url, { latency: null, status: 'pending' as LatencyStatus }])
       )
     )
     await Promise.all(
-      LATENCY_TARGETS.map(async (target) => {
+      latencyTargets.map(async (target) => {
         try {
           const latency = await measureLatency(target.url)
           setLatencyResults((prev) => ({
@@ -186,19 +350,22 @@ const IPPage: React.FC = () => {
       })
     )
     setTestingLatency(false)
-  }, [])
+  }, [latencyTargets])
 
   useEffect(() => {
+    if (!appConfigLoaded) return
     testAllLatencies()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [appConfigLoaded, testAllLatencies])
 
   const averageLatency = (() => {
-    const successes = LATENCY_TARGETS.map((t) => latencyResults[t.url]).filter(
-      (r) => r?.status === 'success' && r.latency !== null
-    )
+    const successes = latencyTargets
+      .map((t) => latencyResults[t.url])
+      .filter(
+        (r): r is LatencyResult & { latency: number } =>
+          r?.status === 'success' && r.latency !== null
+      )
     if (successes.length === 0) return null
-    return Math.round(successes.reduce((acc, r) => acc + (r!.latency ?? 0), 0) / successes.length)
+    return Math.round(successes.reduce((acc, r) => acc + r.latency, 0) / successes.length)
   })()
 
   const fetchIP = useCallback(
@@ -209,7 +376,10 @@ const IPPage: React.FC = () => {
       try {
         const data = await fetchIPInfo(IP_ENDPOINTS[target])
         setIpInfo(parseProvider(target, data as Record<string, unknown>))
-        if (p) setProvider(p)
+        if (p) {
+          setProvider(p)
+          patchAppConfig({ networkIPProvider: p })
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : t('network.fetchFailed'))
         setIpInfo(null)
@@ -217,7 +387,7 @@ const IPPage: React.FC = () => {
         setLoading(false)
       }
     },
-    [provider, t]
+    [patchAppConfig, provider, t]
   )
 
   useEffect(() => {
@@ -291,7 +461,9 @@ const IPPage: React.FC = () => {
             <div className="flex flex-col gap-2.5">
               {/* IP 地址高亮行（负 margin 贴边） */}
               <div className="-mx-1 -mt-1 mb-1 flex items-center justify-between gap-3 rounded-lg border border-primary/20 bg-primary/8 px-2.5 py-2">
-                <span className="shrink-0 text-[13px] text-foreground/60">{t('network.ipAddress')}</span>
+                <span className="shrink-0 text-[13px] text-foreground/60">
+                  {t('network.ipAddress')}
+                </span>
                 <div className="flex items-center gap-1.5">
                   <span className="overflow-hidden text-right font-mono text-[13px] font-semibold text-primary text-ellipsis whitespace-nowrap">
                     {hidden ? '••••••••••••••' : ipInfo.ip}
@@ -385,6 +557,9 @@ const IPPage: React.FC = () => {
           )}
         </div>
 
+        {/* 网络拓扑卡片 */}
+        <NetworkTopologyCard />
+
         {/* 网络延迟卡片 */}
         <div className="rounded-xl border border-foreground/10 bg-content1 p-4 shadow-sm">
           <div className="mb-3.5 flex items-center justify-between gap-3">
@@ -408,6 +583,18 @@ const IPPage: React.FC = () => {
                   {t('network.latency.average')}: {averageLatency}ms
                 </span>
               )}
+              <Tooltip content={t('network.latency.add')}>
+                <Button
+                  size="sm"
+                  isIconOnly
+                  variant={isAddingLatencyTarget ? 'flat' : 'light'}
+                  className="h-7 w-7 min-w-0"
+                  aria-label={t('network.latency.add')}
+                  onPress={openLatencyTargetForm}
+                >
+                  <IoAdd size={16} />
+                </Button>
+              </Tooltip>
               <Button
                 size="sm"
                 isIconOnly
@@ -422,8 +609,60 @@ const IPPage: React.FC = () => {
             </div>
           </div>
 
+          {isAddingLatencyTarget && (
+            <div className="mb-3 flex flex-wrap items-start gap-2">
+              <Input
+                size="sm"
+                className="min-w-32 flex-1"
+                value={customLatencyName}
+                placeholder={t('network.latency.namePlaceholder')}
+                aria-label={t('network.latency.namePlaceholder')}
+                isInvalid={customLatencyNameError}
+                errorMessage={customLatencyNameError ? t('network.latency.invalidName') : undefined}
+                onValueChange={updateCustomLatencyName}
+                onKeyDown={submitLatencyTargetOnEnter}
+              />
+              <Input
+                size="sm"
+                className="min-w-48 flex-[1.5]"
+                value={customLatencyUrl}
+                placeholder={t('network.latency.urlPlaceholder')}
+                aria-label={t('network.latency.urlPlaceholder')}
+                isInvalid={customLatencyUrlError}
+                errorMessage={customLatencyUrlError ? t('network.latency.invalidUrl') : undefined}
+                onValueChange={updateCustomLatencyUrl}
+                onKeyDown={submitLatencyTargetOnEnter}
+              />
+              <Tooltip content={t('common.save')}>
+                <Button
+                  size="sm"
+                  isIconOnly
+                  variant="flat"
+                  color="primary"
+                  className="h-8 w-8 min-w-0"
+                  aria-label={t('common.save')}
+                  onPress={addCustomLatencyTarget}
+                >
+                  <IoCheckmark size={16} />
+                </Button>
+              </Tooltip>
+              <Tooltip content={t('common.cancel')}>
+                <Button
+                  size="sm"
+                  isIconOnly
+                  variant="light"
+                  className="h-8 w-8 min-w-0"
+                  aria-label={t('common.cancel')}
+                  onPress={closeLatencyTargetForm}
+                >
+                  <IoClose size={16} />
+                </Button>
+              </Tooltip>
+            </div>
+          )}
+
           <div className="flex flex-col gap-3">
-            {LATENCY_TARGETS.map((target) => {
+            {latencyTargets.map((target) => {
               const res = latencyResults[target.url]
               return (
                 <div key={target.url} className="flex items-center gap-3">
@@ -452,6 +691,23 @@ const IPPage: React.FC = () => {
                       <span className="text-danger">{t('network.latency.timeout')}</span>
                     )}
                   </span>
+                  {target.custom ? (
+                    <Tooltip content={t('common.delete')}>
+                      <Button
+                        size="sm"
+                        isIconOnly
+                        variant="light"
+                        color="danger"
+                        className="h-6 w-6 min-w-0 shrink-0"
+                        aria-label={t('common.delete')}
+                        onPress={() => removeCustomLatencyTarget(target.url)}
+                      >
+                        <IoClose size={14} />
+                      </Button>
+                    </Tooltip>
+                  ) : (
+                    <span className="h-6 w-6 shrink-0" />
+                  )}
                 </div>
               )
             })}

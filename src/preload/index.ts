@@ -19,7 +19,6 @@ const validInvokeChannels = [
   'mihomoUpgradeGeo',
   'mihomoUpgrade',
   'mihomoUpgradeUI',
-  'mihomoUpgradeConfig',
   'mihomoProxyDelay',
   'mihomoGroupDelay',
   'patchMihomoConfig',
@@ -68,9 +67,11 @@ const validInvokeChannels = [
   'setRuleStr',
   'getFilePath',
   'readTextFile',
+  'readImageFileDataURL',
   'openFile',
   // Core
   'restartCore',
+  'mihomoHotReloadConfig',
   'startMonitor',
   'quitWithoutCore',
   // System

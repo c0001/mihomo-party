@@ -29,8 +29,9 @@ const RuleItem: React.FC<RuleItemProps> = (props) => {
   }
 
   const formatRelativeTime = (timestamp: string): string => {
-    const now = Date.now()
     const time = new Date(timestamp).getTime()
+    if (time === 0) return t('rules.hitAt.never')
+    const now = Date.now()
     const diff = Math.floor((now - time) / 1000)
     if (diff < 60) return t('rules.hitAt.seconds')
     if (diff < 3600) return t('rules.hitAt.minutes', { count: Math.floor(diff / 60) })
@@ -59,34 +60,34 @@ const RuleItem: React.FC<RuleItemProps> = (props) => {
                   </Chip>
                 </div>
               </div>
-
             </div>
 
-            {extra && (() => {
-              const total = extra.hitCount + extra.missCount
-              const rate = total > 0 ? (extra.hitCount / total) * 100 : 0
-              return (
-                <>
-                  <div className="flex items-center gap-3 text-xs shrink-0">
-                    <span className="text-foreground-500 whitespace-nowrap">
-                      {formatRelativeTime(extra.hitAt || extra.missAt)}
-                    </span>
-                    <span className="text-foreground-600 font-medium whitespace-nowrap">
-                      {extra.hitCount}/{total}
-                    </span>
-                    <Chip size="sm" variant="flat" color="primary" className="text-xs">
-                      {rate.toFixed(1)}%
-                    </Chip>
-                  </div>
-                  <Switch
-                    size="sm"
-                    isSelected={isEnabled}
-                    onValueChange={handleToggle}
-                    aria-label="Toggle rule"
-                  />
-                </>
-              )
-            })()}
+            {extra &&
+              (() => {
+                const total = extra.hitCount + extra.missCount
+                const rate = total > 0 ? (extra.hitCount / total) * 100 : 0
+                return (
+                  <>
+                    <div className="flex items-center gap-3 text-xs shrink-0">
+                      <span className="text-foreground-500 whitespace-nowrap">
+                        {formatRelativeTime(extra.hitAt || extra.missAt)}
+                      </span>
+                      <span className="text-foreground-600 font-medium whitespace-nowrap">
+                        {extra.hitCount}/{total}
+                      </span>
+                      <Chip size="sm" variant="flat" color="primary" className="text-xs">
+                        {rate.toFixed(1)}%
+                      </Chip>
+                    </div>
+                    <Switch
+                      size="sm"
+                      isSelected={isEnabled}
+                      onValueChange={handleToggle}
+                      aria-label="Toggle rule"
+                    />
+                  </>
+                )
+              })()}
           </div>
         </CardBody>
       </Card>
